@@ -258,7 +258,7 @@ def decoder_rnn(decoder_embedded_input, decoder_embeddings_matrix, encoder_state
         output_function = lambda x: tf.contrib.layers.fully_connected(x,
                                                                       num_words,
                                                                       None,
-                                                                      decoding_scope,
+                                                                      scope=decoding_scope,
                                                                       weights_initializer=weights,
                                                                       biases_initializer=biases)
         training_predictions = decode_training_set(encoder_state, decoder_cell,
@@ -288,8 +288,7 @@ def seq_to_seq_model(inputs, targets, keep_prob, batch_size, sequence_length,
                                 keep_prob, sequence_length)
     preprocessed_targets = preprocess_targets(targets, questions_words_to_int, batch_size)
     decoder_embeddings_matrix = tf.Variable(
-            tf.random_uniform([questions_num_words+1, decoder_embedding_size]),
-            0, 1)
+            tf.random_uniform([questions_num_words+1, decoder_embedding_size], 0, 1))
     decoder_embedded_input = tf.nn.embedding_lookup(decoder_embeddings_matrix, preprocessed_targets)
     
     training_predictions, test_predictions = decoder_rnn(decoder_embedded_input,
@@ -303,3 +302,88 @@ def seq_to_seq_model(inputs, targets, keep_prob, batch_size, sequence_length,
                                                          keep_prob,
                                                          batch_size)
     return training_predictions, test_predictions
+
+
+# Hyperparameters
+epochs = 100
+batch_size = 64
+rnn_size = 512
+num_layers = 3
+encoding_embedding_size = 512
+decoding_embedding_size = 512
+learning_rate = 0.015
+learning_rate_decay = 0.9
+minimum_learning_rate = 0.0001
+keep_probability = 0.5
+
+# Tensorflow Session
+tf.reset_default_graph()
+session = tf.InteractiveSession()
+
+inputs, targets, learning_rate, keep_prob = model_inputs()
+
+# Set sequence length
+sequence_length = tf.placeholder_with_default(25, None, name='sequence_length')
+
+# Get Shape of inputs tensor
+input_shape = tf.shape(inputs)
+
+# Get training and test predictions
+training_prediction, test_predictions = seq_to_seq_model(
+            tf.reverse(inputs, [-1]),
+            targets,
+            keep_probability,
+            batch_size,
+            sequence_length,
+            len(answer_words_to_int),
+            len(question_words_to_int),
+            encoding_embedding_size,
+            decoding_embedding_size,
+            rnn_size, 
+            num_layers,
+            question_words_to_int
+        )
+
+# Loss Error, Optimizer & Gradient Clipping
+with tf.name_scope('optimization'):
+    loss_error = tf.contrib.seq2seq.sequence_loss(training_prediction,
+                                                  targets,
+                                                  tf.ones([input_shape[0], sequence_length]))
+    
+    optimizer = tf.train.AdamOptimizer(learning_rate)
+    gradients = optimizer.compute_gradients(loss_error)
+    clipped_gradients = [
+            (tf.clip_by_value(grad_tensor, -5., 5.), grad_variable) 
+            for grad_tensor, grad_variable in gradients if grad_tensor is not None]
+    
+    optimizer_gradient_clipping = optimizer.apply_gradients(clipped_gradients)
+
+# Padding the sequence with the <PAD> token so the length of both question
+# and answer is of the same length
+def apply_padding(batch_of_sequence, word_to_int):
+    max_sequence_length = max([len(sequence) for sequence in batch_of_sequence])
+    return [sequence + [word_to_int['<PAD>']] * (max_sequence_length - len(sequence)) 
+            for sequence in batch_of_sequence]  
+
+# Split the data into batches of question and asnwers
+def split_to_batches(questions, answers, batch_size):
+    for i in range(0, len(questions) // batch_size):
+        start_index = i * batch_size
+        questions_in_batch = questions[start_index:start_index+batch_size]
+        answers_in_batch = answers[start_index:start_index+batch_size]
+        
+        padded_questions = np.array(apply_padding(questions_in_batch, question_words_to_int))
+        padded_answers = np.array(apply_padding(answers_in_batch, answer_words_to_int))
+        
+        yield padded_questions, padded_answers
+
+# Split the question and answer for training and validation
+training_validation_index = int(len(sorted_cleaned_questions) * 0.15)
+
+training_questions = sorted_cleaned_questions[training_validation_index:]
+training_answers = sorted_cleaned_answers[training_validation_index:]
+
+validation_questions = sorted_cleaned_questions[:training_validation_index]
+validation_answers = sorted_cleaned_answers[:training_validation_index]
+
+
